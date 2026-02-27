@@ -1,6 +1,7 @@
 import boto3
 import os
 from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.config import Config
 from dotenv import load_dotenv
 import json
 import re
@@ -35,7 +36,11 @@ class MinIOClient:
             endpoint_url=self.endpoint,
             aws_access_key_id=self.access_key,
             aws_secret_access_key=self.secret_key,
-            region_name='us-east-1'  # MinIO不需要真实的region
+            region_name='us-east-1',  # MinIO不需要真实的region
+            config=Config(
+                signature_version='s3v4',
+                s3={'addressing_style': 'path'}
+            )
         )
 
         print("MinIO客户端初始化完成")
@@ -56,19 +61,18 @@ class MinIOClient:
             self.s3_client.head_bucket(Bucket=bucket)
             print(f"Bucket '{bucket}' 已存在")
         except ClientError as e:
-            if e.response['Error']['Code'] == '404':
-                # Bucket不存在，创建它
+            error_info = e.response.get('Error', {})
+            code = str(error_info.get('Code', ''))
+            status = e.response.get('ResponseMetadata', {}).get('HTTPStatusCode')
+
+            if code in {'404', 'NoSuchBucket', 'NotFound'} or status == 404:
+                # bucket不存在，创建它
                 print(f"创建Bucket '{bucket}'...")
-                try:
-                    # 对于MinIO，需要指定CreateBucketConfiguration
-                    self.s3_client.create_bucket(
-                        Bucket=bucket,
-                        CreateBucketConfiguration={'LocationConstraint': 'us-east-1'}
-                    )
-                    print(f"Bucket '{bucket}' 创建成功")
-                except Exception as create_error:
-                    print(f"创建Bucket失败: {create_error}")
-                    raise
+                self._create_bucket(bucket)
+            elif status == 400:
+                # 一些MinIO环境中head_bucket会返回400，改为尝试创建并处理已存在情况
+                print(f"head_bucket返回400，尝试创建Bucket '{bucket}' 进行回退检查...")
+                self._create_bucket(bucket)
             else:
                 print(f"检查Bucket状态失败: {e}")
                 raise
@@ -76,6 +80,22 @@ class MinIOClient:
         # 设置公开访问策略
         self.set_public_read_policy(bucket)
         return bucket
+
+    def _create_bucket(self, bucket_name):
+        """
+        创建bucket。MinIO通常不需要CreateBucketConfiguration。
+        """
+        try:
+            self.s3_client.create_bucket(Bucket=bucket_name)
+            print(f"Bucket '{bucket_name}' 创建成功")
+        except ClientError as e:
+            code = str(e.response.get('Error', {}).get('Code', ''))
+            # 已存在视为成功
+            if code in {'BucketAlreadyOwnedByYou', 'BucketAlreadyExists'}:
+                print(f"Bucket '{bucket_name}' 已存在")
+                return
+            print(f"创建Bucket失败: {e}")
+            raise
 
     def set_public_read_policy(self, bucket_name):
         """
@@ -264,17 +284,17 @@ def init_minio_bucket(pdf_filename=None, custom_bucket_name=None):
         # 1. 转换为小写
         safe_name = base_name.lower()
         
-        # 2. 替换非法字符为横杠 (保留 a-z, 0-9, ., -, _)
+        # 2. 替换非法字符为横杠 (保留 a-z, 0-9, ., -)
         # regex matches ANY char that is NOT in the allowed set
-        safe_name = re.sub(r'[^a-z0-9.\-_]', '-', safe_name)
+        safe_name = re.sub(r'[^a-z0-9.\-]', '-', safe_name)
         
         # 3. 如果结果为空或全是横杠（例如纯中文文件名），使用MD5哈希
-        if not safe_name.replace('-', '').replace('_', '').replace('.', ''):
+        if not safe_name.replace('-', '').replace('.', ''):
             name_hash = hashlib.md5(base_name.encode('utf-8')).hexdigest()[:8]
             bucket_name = f"ragflow-{name_hash}"
         else:
             # 去除首尾的特殊符号
-            safe_name = safe_name.strip('.-_')
+            safe_name = safe_name.strip('.-')
             # 避免连续的横杠
             safe_name = re.sub(r'-+', '-', safe_name)
             bucket_name = f"ragflow-{safe_name}"
@@ -282,6 +302,8 @@ def init_minio_bucket(pdf_filename=None, custom_bucket_name=None):
         # 4. 确保长度合规 (最大255，但为了安全截取63字符)
         if len(bucket_name) > 63:
             bucket_name = bucket_name[:63]
+        # 截断后可能出现尾部'.'或'-'，再次清理
+        bucket_name = bucket_name.strip('.-')
             
     else:
         bucket_name = client.bucket_name
