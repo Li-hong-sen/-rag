@@ -69,7 +69,7 @@ class MinIOClient:
                 # bucket不存在，创建它
                 print(f"创建Bucket '{bucket}'...")
                 self._create_bucket(bucket)
-            elif status == 400:
+            elif status == 400: 
                 # 一些MinIO环境中head_bucket会返回400，改为尝试创建并处理已存在情况
                 print(f"head_bucket返回400，尝试创建Bucket '{bucket}' 进行回退检查...")
                 self._create_bucket(bucket)

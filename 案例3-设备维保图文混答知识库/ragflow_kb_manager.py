@@ -71,11 +71,11 @@ def create_ragflow_resources_multi_docs(page_documents, page_files, pdf_filename
         dataset = rag_object.create_dataset(
             name=dataset_name,
             description="多页面维修案例文档，每页独立分块",
-            embedding_model="BAAI/bge-large-zh-v1.5@BAAI",
+            # embedding_model="BAAI/bge-large-zh-v1.5@BAAI",
             chunk_method="naive"
         )
         print(f"数据集 '{dataset_name}' 创建成功")
-
+ 
         print("配置多文档分块策略：每个文档独立分块")
         dataset.update({
             "parser_config": {
